@@ -1,42 +1,49 @@
-/**
- * Outbox sync — flushes pending local writes to Supabase.
- * Called when online status changes or after a session completes.
- */
+'use client'
 
-import { getDB } from './db'
-import { getSupabaseClient } from './supabase/client'
+import { db } from './db'
 
-export async function flushSyncOutbox(): Promise<{ synced: number; failed: number }> {
-  if (typeof window === 'undefined') return { synced: 0, failed: 0 }
-  if (!navigator.onLine) return { synced: 0, failed: 0 }
+let flushing = false
 
-  const db = getDB()
-  const supabase = getSupabaseClient()
+export async function flushSyncOutbox() {
+  if (flushing || typeof window === 'undefined') return
+  flushing = true
 
-  const pending = await db.syncOutbox.orderBy('createdAt').limit(50).toArray()
-  let synced = 0
-  let failed = 0
+  try {
+    const pending = await db.syncOutbox
+      .where('attempts').below(5)
+      .toArray()
 
-  for (const item of pending) {
-    try {
-      const { error } = item.operation === 'insert'
-        ? await supabase.from(item.tableName).upsert(item.payload as Record<string, unknown>)
-        : await supabase.from(item.tableName).upsert(item.payload as Record<string, unknown>)
+    if (pending.length === 0) return
 
-      if (error) throw error
+    const res = await fetch('/api/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items: pending }),
+    })
 
-      await db.syncOutbox.delete(item.id!)
-      synced++
-    } catch {
-      await db.syncOutbox.update(item.id!, { attempts: item.attempts + 1 })
-      failed++
+    if (!res.ok) return
+
+    const { results } = await res.json() as {
+      results: { id: string; ok: boolean }[]
     }
-  }
 
-  return { synced, failed }
+    for (const r of results) {
+      if (r.ok) {
+        await db.syncOutbox.where('id').equals(Number(r.id)).delete()
+      } else {
+        await db.syncOutbox.where('id').equals(Number(r.id)).modify(item => {
+          item.attempts = (item.attempts ?? 0) + 1
+        })
+      }
+    }
+  } catch {
+    // Offline — will retry on next 'online' event
+  } finally {
+    flushing = false
+  }
 }
 
-// Auto-sync on reconnect
+// Auto-flush when device comes back online
 if (typeof window !== 'undefined') {
   window.addEventListener('online', () => flushSyncOutbox())
 }

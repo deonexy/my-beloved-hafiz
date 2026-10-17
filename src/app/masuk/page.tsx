@@ -3,7 +3,7 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
-import { getSupabaseClient } from '@/lib/supabase/client'
+import { signIn } from 'next-auth/react'
 import toast from 'react-hot-toast'
 
 export default function MasukPage() {
@@ -15,12 +15,18 @@ export default function MasukPage() {
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault()
     setLoading(true)
-    const supabase = getSupabaseClient()
-    const { error } = await supabase.auth.signInWithPassword({ email, password })
-    if (error) {
+
+    const result = await signIn('credentials', {
+      email,
+      password,
+      redirect: false,
+    })
+
+    if (result?.error) {
       toast.error('Email atau password salah')
     } else {
       router.push('/dashboard')
+      router.refresh()
     }
     setLoading(false)
   }
